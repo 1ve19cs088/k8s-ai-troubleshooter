@@ -42,3 +42,19 @@ def get_events():
         }
         for event in events.items
     ]
+@app.get("/logs/{pod_name}")
+def get_logs(pod_name: str):
+
+    config.load_kube_config(context="kind-ai-agent")
+
+    v1 = client.CoreV1Api()
+
+    logs = v1.read_namespaced_pod_log(
+        name=pod_name,
+        namespace="default"
+    )
+
+    return {
+        "pod_name": pod_name,
+        "logs": logs
+    }
