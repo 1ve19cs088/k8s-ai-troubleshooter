@@ -84,28 +84,50 @@ def analyze_pod(pod_name: str):
         namespace="default"
     )
 
-    # Pending Pods
-    if pod.status.phase == "Pending":
-
-        return {
-            "pod": pod_name,
-            "issue": "Pending",
-            "root_cause": "Pod could not be scheduled",
-            "severity": "Medium",
-            "recommendation": [
-                "Check node resources",
-                "Check CPU and memory requests",
-                "Inspect scheduling events"
-            ]
-        }
-
-    # Waiting State Checks
+    # --------------------------------------------------
+    # OOMKilled Detection (highest priority)
+    # --------------------------------------------------
     if (
         pod.status.container_statuses
+        and pod.status.container_statuses[0].last_state
+        and pod.status.container_statuses[0].last_state.terminated
+    ):
+
+        terminated = (
+            pod.status.container_statuses[0]
+            .last_state
+            .terminated
+        )
+
+        if terminated.reason == "OOMKilled":
+
+            return {
+                "pod": pod_name,
+                "issue": "OOMKilled",
+                "root_cause": "Container exceeded memory limit",
+                "severity": "High",
+                "recommendation": [
+                    "Increase memory limit",
+                    "Investigate memory leaks",
+                    "Profile application memory usage"
+                ]
+            }
+
+    # --------------------------------------------------
+    # Waiting State Checks
+    # --------------------------------------------------
+    if (
+        pod.status.container_statuses
+        and pod.status.container_statuses[0].state
         and pod.status.container_statuses[0].state.waiting
     ):
 
-        reason = pod.status.container_statuses[0].state.waiting.reason
+        reason = (
+            pod.status.container_statuses[0]
+            .state
+            .waiting
+            .reason
+        )
 
         # ImagePullBackOff
         if reason == "ImagePullBackOff":
@@ -137,29 +159,27 @@ def analyze_pod(pod_name: str):
                 ]
             }
 
-    # OOMKilled Check
-    if (
-        pod.status.container_statuses
-        and pod.status.container_statuses[0].last_state
-        and pod.status.container_statuses[0].last_state.terminated
-    ):
+    # --------------------------------------------------
+    # Generic Pending Detection
+    # (must come AFTER ImagePullBackOff)
+    # --------------------------------------------------
+    if pod.status.phase == "Pending":
 
-        terminated = pod.status.container_statuses[0].last_state.terminated
+        return {
+            "pod": pod_name,
+            "issue": "Pending",
+            "root_cause": "Pod could not be scheduled",
+            "severity": "Medium",
+            "recommendation": [
+                "Check node resources",
+                "Check CPU and memory requests",
+                "Inspect scheduling events"
+            ]
+        }
 
-        if terminated.reason == "OOMKilled":
-
-            return {
-                "pod": pod_name,
-                "issue": "OOMKilled",
-                "root_cause": "Container exceeded memory limit",
-                "severity": "High",
-                "recommendation": [
-                    "Increase memory limit",
-                    "Investigate memory leaks",
-                    "Profile application memory usage"
-                ]
-            }
-
+    # --------------------------------------------------
+    # Default Response
+    # --------------------------------------------------
     return {
         "pod": pod_name,
         "message": "No known issue detected"
