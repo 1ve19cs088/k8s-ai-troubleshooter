@@ -84,6 +84,22 @@ def analyze_pod(pod_name: str):
         namespace="default"
     )
 
+    # Pending Pods
+    if pod.status.phase == "Pending":
+
+        return {
+            "pod": pod_name,
+            "issue": "Pending",
+            "root_cause": "Pod could not be scheduled",
+            "severity": "Medium",
+            "recommendation": [
+                "Check node resources",
+                "Check CPU and memory requests",
+                "Inspect scheduling events"
+            ]
+        }
+
+    # Waiting State Checks
     if (
         pod.status.container_statuses
         and pod.status.container_statuses[0].state.waiting
@@ -91,16 +107,56 @@ def analyze_pod(pod_name: str):
 
         reason = pod.status.container_statuses[0].state.waiting.reason
 
+        # ImagePullBackOff
         if reason == "ImagePullBackOff":
 
             return {
                 "pod": pod_name,
+                "issue": "ImagePullBackOff",
                 "root_cause": "Container image could not be pulled",
                 "severity": "High",
                 "recommendation": [
                     "Verify image name",
                     "Verify image tag",
                     "Check registry access"
+                ]
+            }
+
+        # CrashLoopBackOff
+        if reason == "CrashLoopBackOff":
+
+            return {
+                "pod": pod_name,
+                "issue": "CrashLoopBackOff",
+                "root_cause": "Application crashes immediately after startup",
+                "severity": "High",
+                "recommendation": [
+                    "Review container logs",
+                    "Check startup command",
+                    "Validate application configuration"
+                ]
+            }
+
+    # OOMKilled Check
+    if (
+        pod.status.container_statuses
+        and pod.status.container_statuses[0].last_state
+        and pod.status.container_statuses[0].last_state.terminated
+    ):
+
+        terminated = pod.status.container_statuses[0].last_state.terminated
+
+        if terminated.reason == "OOMKilled":
+
+            return {
+                "pod": pod_name,
+                "issue": "OOMKilled",
+                "root_cause": "Container exceeded memory limit",
+                "severity": "High",
+                "recommendation": [
+                    "Increase memory limit",
+                    "Investigate memory leaks",
+                    "Profile application memory usage"
                 ]
             }
 
