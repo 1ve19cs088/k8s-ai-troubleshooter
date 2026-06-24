@@ -3,9 +3,13 @@ from kubernetes import client, config
 
 app = FastAPI()
 
+
 @app.get("/")
 def home():
-    return {"message": "K8s AI Troubleshooter"}
+    return {
+        "message": "K8s AI Troubleshooter"
+    }
+
 
 @app.get("/pods")
 def get_pods():
@@ -24,6 +28,8 @@ def get_pods():
         }
         for pod in pods.items
     ]
+
+
 @app.get("/events")
 def get_events():
 
@@ -42,8 +48,12 @@ def get_events():
         }
         for event in events.items
     ]
+
+
 @app.get("/logs/{pod_name}")
 def get_logs(pod_name: str):
+
+    pod_name = pod_name.strip()
 
     config.load_kube_config(context="kind-ai-agent")
 
@@ -57,4 +67,44 @@ def get_logs(pod_name: str):
     return {
         "pod_name": pod_name,
         "logs": logs
+    }
+
+
+@app.get("/analyze/{pod_name}")
+def analyze_pod(pod_name: str):
+
+    pod_name = pod_name.strip()
+
+    config.load_kube_config(context="kind-ai-agent")
+
+    v1 = client.CoreV1Api()
+
+    pod = v1.read_namespaced_pod(
+        name=pod_name,
+        namespace="default"
+    )
+
+    if (
+        pod.status.container_statuses
+        and pod.status.container_statuses[0].state.waiting
+    ):
+
+        reason = pod.status.container_statuses[0].state.waiting.reason
+
+        if reason == "ImagePullBackOff":
+
+            return {
+                "pod": pod_name,
+                "root_cause": "Container image could not be pulled",
+                "severity": "High",
+                "recommendation": [
+                    "Verify image name",
+                    "Verify image tag",
+                    "Check registry access"
+                ]
+            }
+
+    return {
+        "pod": pod_name,
+        "message": "No known issue detected"
     }
