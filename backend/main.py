@@ -24,3 +24,21 @@ def get_pods():
         }
         for pod in pods.items
     ]
+@app.get("/events")
+def get_events():
+
+    config.load_kube_config(context="kind-ai-agent")
+
+    v1 = client.CoreV1Api()
+
+    events = v1.list_event_for_all_namespaces()
+
+    return [
+        {
+            "namespace": event.metadata.namespace,
+            "type": event.type,
+            "reason": event.reason,
+            "message": event.message
+        }
+        for event in events.items
+    ]
