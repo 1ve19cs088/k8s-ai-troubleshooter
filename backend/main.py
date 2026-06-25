@@ -1,7 +1,18 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from kubernetes import client, config
 
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/")
@@ -580,4 +591,16 @@ def analyze_resource(pod_name: str):
     return {
         "pod": pod_name,
         "message": "No resource exhaustion detected."
+    }
+
+
+# ==========================================================
+# Unified AI Pod Analyzer
+# ==========================================================
+
+@app.get("/analyze/pod/{pod_name}")
+def analyze_pod_ai(pod_name: str):
+
+    return {
+        "message": "AI Analyzer Coming Soon"
     }
