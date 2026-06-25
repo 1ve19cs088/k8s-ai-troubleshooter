@@ -63,7 +63,7 @@ export default function ResourceSidebar({
                     <div
                         key={`${p.namespace}/${p.name}`}
                         className={`resource-item ${selected?.name === p.name && selected?.namespace === p.namespace ? "selected" : ""}`}
-                        onClick={() => onSelect({ type: "pod", ...p })}
+                        onClick={() => onSelect({ kind: "pod", ...p })}
                     >
                         <div style={{ flex: 1, minWidth: 0 }}>
                             <div className="resource-item-name" title={p.name}>{p.name}</div>
@@ -82,7 +82,7 @@ export default function ResourceSidebar({
                     <div
                         key={`${d.namespace}/${d.name}`}
                         className={`resource-item ${selected?.name === d.name && selected?.namespace === d.namespace ? "selected" : ""}`}
-                        onClick={() => onSelect({ type: "deployment", ...d })}
+                        onClick={() => onSelect({ kind: "deployment", ...d })}
                     >
                         <div style={{ flex: 1, minWidth: 0 }}>
                             <div className="resource-item-name" title={d.name}>{d.name}</div>
@@ -97,7 +97,7 @@ export default function ResourceSidebar({
                     <div
                         key={`${s.namespace}/${s.name}`}
                         className={`resource-item ${selected?.name === s.name && selected?.namespace === s.namespace ? "selected" : ""}`}
-                        onClick={() => onSelect({ type: "service", ...s })}
+                        onClick={() => onSelect({ kind: "service", ...s })}
                     >
                         <div style={{ flex: 1, minWidth: 0 }}>
                             <div className="resource-item-name" title={s.name}>{s.name}</div>
@@ -110,8 +110,8 @@ export default function ResourceSidebar({
                 {tab === "Events" && filteredEvents.map((e, i) => (
                     <div
                         key={i}
-                        className={`resource-item ${e.type === "Warning" ? "" : ""}`}
-                        style={{ cursor: "default" }}
+                        className={`resource-item ${selected?.kind === "event" && selected?._idx === i ? "selected" : ""}`}
+                        onClick={() => onSelect({ kind: "event", _idx: i, ...e })}
                     >
                         <div style={{ flex: 1, minWidth: 0 }}>
                             <div style={{ display: "flex", gap: 6, alignItems: "center" }}>

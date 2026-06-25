@@ -382,23 +382,61 @@ export default function DetailPanel({ selected, context }) {
         );
     }
 
-    const typeLabel = { pod: "Pod", deployment: "Deployment", service: "Service" }[selected.type] || selected.type;
+    const ICONS  = { pod: "☸", deployment: "⬡", service: "⇄", event: "⚡" };
+    const LABELS = { pod: "Pod", deployment: "Deployment", service: "Service", event: "Event" };
+    const icon  = ICONS[selected.kind]  || "☸";
+    const label = LABELS[selected.kind] || selected.kind;
+    const title = selected.kind === "event" ? selected.object : selected.name;
 
     return (
         <div className="detail-panel">
             <div className="detail-header">
-                <span style={{ fontSize: 18 }}>
-                    {selected.type === "pod" ? "☸" : selected.type === "deployment" ? "⬡" : "⇄"}
-                </span>
-                <div className="detail-title">{selected.name}</div>
+                <span style={{ fontSize: 18 }}>{icon}</span>
+                <div className="detail-title">{title}</div>
                 <span style={{ fontSize: 11, color: "var(--text-muted)", background: "var(--surface2)", padding: "2px 8px", borderRadius: 4 }}>
-                    {typeLabel} · {selected.namespace}
+                    {label} · {selected.namespace}
                 </span>
             </div>
 
-            {selected.type === "pod" && <PodDetail resource={selected} context={context} />}
-            {selected.type === "deployment" && <DeployDetail resource={selected} />}
-            {selected.type === "service" && <ServiceDetail resource={selected} />}
+            {selected.kind === "pod"        && <PodDetail resource={selected} context={context} />}
+            {selected.kind === "deployment" && <DeployDetail resource={selected} />}
+            {selected.kind === "service"    && <ServiceDetail resource={selected} />}
+            {selected.kind === "event"      && <EventDetail resource={selected} />}
+        </div>
+    );
+}
+
+function EventDetail({ resource }) {
+    const isWarning = resource.type === "Warning";
+    return (
+        <div className="detail-body">
+            <div className="detail-section">
+                <h4>Event Detail</h4>
+                <div className="kv-grid">
+                    <KV label="Type"      value={resource.type} />
+                    <KV label="Reason"    value={resource.reason} />
+                    <KV label="Object"    value={resource.object} />
+                    <KV label="Namespace" value={resource.namespace} />
+                    <KV label="Count"     value={resource.count} />
+                    <KV label="Last Seen" value={resource.last_seen} />
+                </div>
+            </div>
+            <div className="detail-section">
+                <h4>Message</h4>
+                <div style={{
+                    background: isWarning ? "#fff7ed" : "var(--surface2)",
+                    border: `1px solid ${isWarning ? "#fed7aa" : "var(--border)"}`,
+                    borderLeft: `4px solid ${isWarning ? "#d97706" : "#16a34a"}`,
+                    borderRadius: 8,
+                    padding: "14px 16px",
+                    fontSize: 13,
+                    lineHeight: 1.6,
+                    color: "var(--text)",
+                    wordBreak: "break-word",
+                }}>
+                    {resource.message}
+                </div>
+            </div>
         </div>
     );
 }

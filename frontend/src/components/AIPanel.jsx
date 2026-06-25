@@ -94,12 +94,12 @@ export default function AIPanel({ selected, context }) {
 
     const runAnalysis = async () => {
         if (!selected || loading) return;
-        const label = `Analyzing ${selected.type} "${selected.name}"…`;
-        setMessages(m => [...m, { role: "user", text: `Analyze ${selected.type}: ${selected.name}` }]);
+        const label = `Analyzing ${selected.kind} "${selected.name}"…`;
+        setMessages(m => [...m, { role: "user", text: `Analyze ${selected.kind}: ${selected.name}` }]);
         setLoading(true);
         try {
             const result = await aiAnalyze({
-                resource_type: selected.type,
+                resource_type: selected.kind,
                 resource_name: selected.name,
                 namespace: selected.namespace,
                 context,
@@ -122,7 +122,7 @@ export default function AIPanel({ selected, context }) {
                 message: userMsg,
                 context,
                 resource_context: selected ? {
-                    type: selected.type,
+                    type: selected.kind,
                     name: selected.name,
                     namespace: selected.namespace,
                     status: selected.status || selected.ready,
@@ -154,10 +154,16 @@ export default function AIPanel({ selected, context }) {
                 <button
                     className="ai-analyze-btn"
                     onClick={runAnalysis}
-                    disabled={!selected || loading}
-                    title={selected ? `Analyze ${selected.name}` : "Select a resource first"}
+                    disabled={!selected || loading || selected.kind === "event"}
+                    title={
+                        !selected ? "Select a pod, deployment, or service first"
+                        : selected.kind === "event" ? "Select a pod or deployment to analyze"
+                        : `Analyze ${selected.name}`
+                    }
                 >
-                    {loading ? "⟳ Analyzing..." : selected ? `✦ Analyze ${selected.name}` : "✦ Select a resource to analyze"}
+                    {loading ? "⟳ Analyzing..."
+                        : selected && selected.kind !== "event" ? `✦ Analyze ${selected.name}`
+                        : "✦ Select a resource to analyze"}
                 </button>
             </div>
 
