@@ -1,606 +1,521 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from typing import Optional
+from pydantic import BaseModel
 from kubernetes import client, config
+import anthropic
+import os
 
-app = FastAPI()
+app = FastAPI(title="K8s AI Troubleshooter")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-    ],
+    allow_origins=["http://localhost:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
-@app.get("/")
-def home():
-    return {
-        "message": "K8s AI Troubleshooter"
-    }
+# ──────────────────────────────────────────────
+# Helpers
+# ──────────────────────────────────────────────
 
+def load_k8s(context: Optional[str] = None):
+    """Load kubeconfig for the given context (or current context if None)."""
+    config.load_kube_config(context=context)
+
+
+def get_current_context() -> str:
+    contexts, active = config.list_kube_config_contexts()
+    return active["name"] if active else ""
+
+
+def list_all_contexts() -> list[str]:
+    contexts, _ = config.list_kube_config_contexts()
+    return [c["name"] for c in contexts]
+
+
+# ──────────────────────────────────────────────
+# Context & Namespace Discovery
+# ──────────────────────────────────────────────
+
+@app.get("/contexts")
+def get_contexts():
+    contexts = list_all_contexts()
+    current = get_current_context()
+    return {"contexts": contexts, "current": current}
+
+
+@app.get("/namespaces")
+def get_namespaces(context: Optional[str] = Query(default=None)):
+    load_k8s(context)
+    v1 = client.CoreV1Api()
+    ns_list = v1.list_namespace()
+    return [ns.metadata.name for ns in ns_list.items]
+
+
+# ──────────────────────────────────────────────
+# Pods
+# ──────────────────────────────────────────────
 
 @app.get("/pods")
-def get_pods():
-
-    config.load_kube_config(context="kind-ai-agent")
-
+def get_pods(
+    context: Optional[str] = Query(default=None),
+    namespace: str = Query(default="default"),
+):
+    load_k8s(context)
     v1 = client.CoreV1Api()
 
-    pods = v1.list_pod_for_all_namespaces()
+    try:
+        if namespace == "all":
+            pods = v1.list_pod_for_all_namespaces().items
+        else:
+            pods = v1.list_namespaced_pod(namespace=namespace).items
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Cannot reach cluster: {e}")
 
-    return [
-        {
+    result = []
+    for pod in pods:
+        container_statuses = pod.status.container_statuses or []
+        restarts = sum(cs.restart_count for cs in container_statuses)
+        ready_count = sum(1 for cs in container_statuses if cs.ready)
+        total_count = len(container_statuses)
+
+        result.append({
             "name": pod.metadata.name,
             "namespace": pod.metadata.namespace,
-            "status": pod.status.phase
-        }
-        for pod in pods.items
-    ]
+            "status": pod.status.phase or "Unknown",
+            "restarts": restarts,
+            "ready": f"{ready_count}/{total_count}",
+            "node": pod.spec.node_name or "Unscheduled",
+            "age": str(pod.metadata.creation_timestamp) if pod.metadata.creation_timestamp else "",
+        })
+
+    return result
 
 
-@app.get("/events")
-def get_events():
+# ──────────────────────────────────────────────
+# Deployments
+# ──────────────────────────────────────────────
 
-    config.load_kube_config(context="kind-ai-agent")
+@app.get("/deployments")
+def get_deployments(
+    context: Optional[str] = Query(default=None),
+    namespace: str = Query(default="default"),
+):
+    load_k8s(context)
+    apps = client.AppsV1Api()
 
-    v1 = client.CoreV1Api()
-
-    events = v1.list_event_for_all_namespaces()
+    if namespace == "all":
+        deploys = apps.list_deployment_for_all_namespaces().items
+    else:
+        deploys = apps.list_namespaced_deployment(namespace=namespace).items
 
     return [
         {
-            "namespace": event.metadata.namespace,
-            "type": event.type,
-            "reason": event.reason,
-            "message": event.message
+            "name": d.metadata.name,
+            "namespace": d.metadata.namespace,
+            "desired": d.spec.replicas or 0,
+            "ready": d.status.ready_replicas or 0,
+            "available": d.status.available_replicas or 0,
+            "updated": d.status.updated_replicas or 0,
         }
-        for event in events.items
+        for d in deploys
     ]
 
 
-@app.get("/logs/{pod_name}")
-def get_logs(pod_name: str):
+# ──────────────────────────────────────────────
+# Services
+# ──────────────────────────────────────────────
 
-    pod_name = pod_name.strip()
-
-    config.load_kube_config(context="kind-ai-agent")
-
+@app.get("/services")
+def get_services(
+    context: Optional[str] = Query(default=None),
+    namespace: str = Query(default="default"),
+):
+    load_k8s(context)
     v1 = client.CoreV1Api()
 
-    logs = v1.read_namespaced_pod_log(
-        name=pod_name,
-        namespace="default"
-    )
+    if namespace == "all":
+        svcs = v1.list_service_for_all_namespaces().items
+    else:
+        svcs = v1.list_namespaced_service(namespace=namespace).items
 
-    return {
-        "pod_name": pod_name,
-        "logs": logs
-    }
+    return [
+        {
+            "name": s.metadata.name,
+            "namespace": s.metadata.namespace,
+            "type": s.spec.type,
+            "cluster_ip": s.spec.cluster_ip or "None",
+            "ports": [
+                f"{p.port}:{p.target_port}/{p.protocol}"
+                for p in (s.spec.ports or [])
+            ],
+        }
+        for s in svcs
+    ]
 
 
-@app.get("/analyze/{pod_name}")
-def analyze_pod(pod_name: str):
+# ──────────────────────────────────────────────
+# Events
+# ──────────────────────────────────────────────
 
-    pod_name = pod_name.strip()
-
-    config.load_kube_config(context="kind-ai-agent")
-
+@app.get("/events")
+def get_events(
+    context: Optional[str] = Query(default=None),
+    namespace: str = Query(default="default"),
+):
+    load_k8s(context)
     v1 = client.CoreV1Api()
 
-    pod = v1.read_namespaced_pod(
-        name=pod_name,
-        namespace="default"
-    )
+    if namespace == "all":
+        events = v1.list_event_for_all_namespaces().items
+    else:
+        events = v1.list_namespaced_event(namespace=namespace).items
 
-    # --------------------------------------------------
-    # OOMKilled Detection (highest priority)
-    # --------------------------------------------------
-    if (
-        pod.status.container_statuses
-        and pod.status.container_statuses[0].last_state
-        and pod.status.container_statuses[0].last_state.terminated
-    ):
-
-        terminated = (
-            pod.status.container_statuses[0]
-            .last_state
-            .terminated
-        )
-
-        if terminated.reason == "OOMKilled":
-
-            return {
-                "pod": pod_name,
-                "issue": "OOMKilled",
-                "root_cause": "Container exceeded memory limit",
-                "severity": "High",
-                "recommendation": [
-                    "Increase memory limit",
-                    "Investigate memory leaks",
-                    "Profile application memory usage"
-                ]
-            }
-
-    # --------------------------------------------------
-    # Waiting State Checks
-    # --------------------------------------------------
-    if (
-        pod.status.container_statuses
-        and pod.status.container_statuses[0].state
-        and pod.status.container_statuses[0].state.waiting
-    ):
-
-        reason = (
-            pod.status.container_statuses[0]
-            .state
-            .waiting
-            .reason
-        )
-
-        # ImagePullBackOff
-        if reason == "ImagePullBackOff":
-
-            return {
-                "pod": pod_name,
-                "issue": "ImagePullBackOff",
-                "root_cause": "Container image could not be pulled",
-                "severity": "High",
-                "recommendation": [
-                    "Verify image name",
-                    "Verify image tag",
-                    "Check registry access"
-                ]
-            }
-
-        # CrashLoopBackOff
-        if reason == "CrashLoopBackOff":
-
-            return {
-                "pod": pod_name,
-                "issue": "CrashLoopBackOff",
-                "root_cause": "Application crashes immediately after startup",
-                "severity": "High",
-                "recommendation": [
-                    "Review container logs",
-                    "Check startup command",
-                    "Validate application configuration"
-                ]
-            }
-
-    # --------------------------------------------------
-    # Generic Pending Detection
-    # (must come AFTER ImagePullBackOff)
-    # --------------------------------------------------
-    if pod.status.phase == "Pending":
-
-        return {
-            "pod": pod_name,
-            "issue": "Pending",
-            "root_cause": "Pod could not be scheduled",
-            "severity": "Medium",
-            "recommendation": [
-                "Check node resources",
-                "Check CPU and memory requests",
-                "Inspect scheduling events"
-            ]
-        }
-
-    # --------------------------------------------------
-    # Default Response
-    # --------------------------------------------------
-    return {
-        "pod": pod_name,
-        "message": "No known issue detected"
-    }
-
-@app.get("/analyze/deployment/{deployment_name}")
-def analyze_deployment(deployment_name: str):
-
-    deployment_name = deployment_name.strip()
-
-    config.load_kube_config(context="kind-ai-agent")
-
-    apps = client.AppsV1Api()
-
-    deployment = apps.read_namespaced_deployment(
-        name=deployment_name,
-        namespace="default"
-    )
-
-    desired = deployment.spec.replicas
-    available = deployment.status.available_replicas or 0
-    updated = deployment.status.updated_replicas or 0
-
-    if available < desired:
-
-        return {
-            "deployment": deployment_name,
-            "issue": "DeploymentRolloutFailure",
-            "severity": "High",
-            "root_cause": "Deployment rollout has not completed successfully.",
-            "status": {
-                "desired_replicas": desired,
-                "updated_replicas": updated,
-                "available_replicas": available
-            },
-            "recommendation": [
-                "Inspect deployment events",
-                "Inspect ReplicaSets",
-                "Inspect failing Pods",
-                "Run kubectl rollout status",
-                "Review container logs"
-            ]
-        }
-
-    return {
-        "deployment": deployment_name,
-        "message": "Deployment rollout successful"
-    }
-
-@app.get("/analyze/service/{service_name}")
-def analyze_service(service_name: str):
-
-    config.load_kube_config(context="kind-ai-agent")
-
-    v1 = client.CoreV1Api()
-
-    service = v1.read_namespaced_service(
-        name=service_name,
-        namespace="default"
-    )
-
-    endpoints = v1.read_namespaced_endpoints(
-        name=service_name,
-        namespace="default"
-    )
-
-    has_endpoints = False
-
-    if endpoints.subsets:
-        for subset in endpoints.subsets:
-            if subset.addresses:
-                has_endpoints = True
-
-    if not has_endpoints:
-
-        return {
-            "service": service_name,
-            "issue": "ServiceSelectorMismatch",
-            "severity": "High",
-            "root_cause": "Service selector does not match any running Pods.",
-            "selector": service.spec.selector,
-            "recommendation": [
-                "Verify Service selector labels",
-                "Verify Pod labels",
-                "Run kubectl get endpoints",
-                "Run kubectl get pods --show-labels"
-            ]
-        }
-
-    return {
-        "service": service_name,
-        "message": "Service is healthy"
-    }
-
-@app.get("/analyze/readiness/{pod_name}")
-def analyze_readiness(pod_name: str):
-
-    config.load_kube_config(context="kind-ai-agent")
-
-    v1 = client.CoreV1Api()
-
-    pod = v1.read_namespaced_pod(
-        name=pod_name,
-        namespace="default"
-    )
-
-    # Pod is not Ready
-    if not pod.status.conditions:
-        return {
-            "message": "No readiness information available."
-        }
-
-    ready_condition = next(
-        (
-            c for c in pod.status.conditions
-            if c.type == "Ready"
+    # Sort by last timestamp descending, show warnings first
+    events = sorted(
+        events,
+        key=lambda e: (
+            0 if e.type == "Warning" else 1,
+            -(e.last_timestamp.timestamp() if e.last_timestamp else 0),
         ),
-        None
     )
 
-    if ready_condition and ready_condition.status == "False":
+    return [
+        {
+            "namespace": e.metadata.namespace,
+            "type": e.type,
+            "reason": e.reason,
+            "object": f"{e.involved_object.kind}/{e.involved_object.name}",
+            "message": e.message,
+            "count": e.count or 1,
+            "last_seen": str(e.last_timestamp) if e.last_timestamp else "",
+        }
+        for e in events[:100]
+    ]
 
-        events = v1.list_namespaced_event(
-            namespace="default",
-            field_selector=f"involvedObject.name={pod_name}"
-        )
 
-        for event in events.items:
+# ──────────────────────────────────────────────
+# Logs
+# ──────────────────────────────────────────────
 
-            if (
-                event.reason == "Unhealthy"
-                and "Readiness probe failed" in event.message
-            ):
-
-                return {
-                    "pod": pod_name,
-                    "issue": "ReadinessProbeFailure",
-                    "severity": "Medium",
-                    "root_cause": "Pod is running but failing its readiness probe.",
-                    "probe_message": event.message,
-                    "recommendation": [
-                        "Verify readiness probe path",
-                        "Verify application health endpoint",
-                        "Inspect application logs",
-                        "Validate readinessProbe configuration",
-                        "Run kubectl describe pod"
-                    ]
-                }
-
-    return {
-        "pod": pod_name,
-        "message": "Readiness probe is healthy."
-    }
-
-@app.get("/analyze/liveness/{pod_name}")
-def analyze_liveness(pod_name: str):
-
-    pod_name = pod_name.strip()
-
-    config.load_kube_config(context="kind-ai-agent")
-
+@app.get("/logs/{namespace}/{pod_name}")
+def get_logs(
+    namespace: str,
+    pod_name: str,
+    context: Optional[str] = Query(default=None),
+    tail_lines: int = Query(default=100),
+):
+    load_k8s(context)
     v1 = client.CoreV1Api()
+    try:
+        logs = v1.read_namespaced_pod_log(
+            name=pod_name,
+            namespace=namespace,
+            tail_lines=tail_lines,
+        )
+        return {"pod_name": pod_name, "namespace": namespace, "logs": logs}
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
-    pod = v1.read_namespaced_pod(
-        name=pod_name,
-        namespace="default"
-    )
+
+# ──────────────────────────────────────────────
+# Pod Detail (describe-style)
+# ──────────────────────────────────────────────
+
+@app.get("/pod/{namespace}/{pod_name}")
+def get_pod_detail(
+    namespace: str,
+    pod_name: str,
+    context: Optional[str] = Query(default=None),
+):
+    load_k8s(context)
+    v1 = client.CoreV1Api()
+    try:
+        pod = v1.read_namespaced_pod(name=pod_name, namespace=namespace)
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    container_statuses = pod.status.container_statuses or []
+
+    containers = []
+    for c in pod.spec.containers:
+        status = next((s for s in container_statuses if s.name == c.name), None)
+        containers.append({
+            "name": c.name,
+            "image": c.image,
+            "ready": status.ready if status else False,
+            "restarts": status.restart_count if status else 0,
+            "state": _container_state(status) if status else "Unknown",
+            "resources": {
+                "requests": dict(c.resources.requests or {}),
+                "limits": dict(c.resources.limits or {}),
+            },
+        })
 
     events = v1.list_namespaced_event(
-        namespace="default"
+        namespace=namespace,
+        field_selector=f"involvedObject.name={pod_name}",
     )
-
-    restart_count = 0
-
-    if pod.status.container_statuses:
-        restart_count = pod.status.container_statuses[0].restart_count
-
-    for event in events.items:
-
-        if (
-            event.involved_object.kind == "Pod"
-            and event.involved_object.name == pod_name
-        ):
-
-            if (
-                event.reason == "Unhealthy"
-                and "Liveness probe failed" in event.message
-            ):
-
-                return {
-                    "pod": pod_name,
-                    "issue": "LivenessProbeFailure",
-                    "severity": "High",
-                    "root_cause": "Container is repeatedly failing its liveness probe and Kubernetes is restarting it.",
-                    "restart_count": restart_count,
-                    "probe_message": event.message,
-                    "recommendation": [
-                        "Verify liveness probe path",
-                        "Verify application health endpoint",
-                        "Inspect application logs",
-                        "Increase initialDelaySeconds if startup is slow",
-                        "Tune failureThreshold and timeoutSeconds",
-                        "Run kubectl describe pod"
-                    ]
-                }
 
     return {
-        "pod": pod_name,
-        "message": "No liveness probe failures detected"
-    }
-
-@app.get("/analyze/dns/{pod_name}")
-def analyze_dns(pod_name: str):
-
-    pod_name = pod_name.strip()
-
-    config.load_kube_config(context="kind-ai-agent")
-
-    v1 = client.CoreV1Api()
-
-    logs = v1.read_namespaced_pod_log(
-        name=pod_name,
-        namespace="default"
-    )
-
-    dns_errors = [
-        "NXDOMAIN",
-        "can't find",
-        "can't resolve",
-        "no such host",
-        "Temporary failure in name resolution",
-        "Name or service not known"
-    ]
-
-    for error in dns_errors:
-
-        if error.lower() in logs.lower():
-
-            return {
-                "pod": pod_name,
-                "issue": "DNSResolutionFailure",
-                "severity": "High",
-                "root_cause": "Application failed to resolve a DNS name.",
-                "log_snippet": logs.strip(),
-                "recommendation": [
-                    "Verify Service name",
-                    "Verify Namespace",
-                    "Check CoreDNS pods",
-                    "Verify DNS policy",
-                    "Run nslookup from another pod",
-                    "Inspect Kubernetes Service configuration"
-                ]
+        "name": pod.metadata.name,
+        "namespace": pod.metadata.namespace,
+        "phase": pod.status.phase,
+        "node": pod.spec.node_name,
+        "labels": dict(pod.metadata.labels or {}),
+        "containers": containers,
+        "conditions": [
+            {"type": c.type, "status": c.status, "reason": c.reason or ""}
+            for c in (pod.status.conditions or [])
+        ],
+        "events": [
+            {
+                "type": e.type,
+                "reason": e.reason,
+                "message": e.message,
+                "count": e.count or 1,
             }
-
-    return {
-        "pod": pod_name,
-        "message": "DNS resolution is healthy."
+            for e in events.items
+        ],
     }
 
-@app.get("/analyze/network/{pod_name}")
-def analyze_network(pod_name: str):
 
-    pod_name = pod_name.strip()
+def _container_state(status) -> str:
+    if status.state.running:
+        return "Running"
+    if status.state.waiting:
+        return f"Waiting ({status.state.waiting.reason})"
+    if status.state.terminated:
+        return f"Terminated ({status.state.terminated.reason})"
+    return "Unknown"
 
-    config.load_kube_config(context="kind-ai-agent")
 
-    v1 = client.CoreV1Api()
+# ──────────────────────────────────────────────
+# LLM provider helper
+# ──────────────────────────────────────────────
 
-    logs = v1.read_namespaced_pod_log(
-        name=pod_name,
-        namespace="default"
+PROVIDER_DEFAULTS = {
+    "anthropic":    "claude-haiku-4-5-20251001",
+    "openai":       "gpt-4o-mini",
+    "github":       "gpt-4o-mini",   # GitHub Models (free with PAT)
+}
+
+def llm_complete(provider: str, api_key: str, model: str,
+                 system: str, user: str) -> str:
+    """Call the appropriate LLM and return the text response."""
+    if provider == "anthropic":
+        ac = anthropic.Anthropic(api_key=api_key)
+        msg = ac.messages.create(
+            model=model,
+            max_tokens=1024,
+            system=system,
+            messages=[{"role": "user", "content": user}],
+        )
+        return msg.content[0].text
+
+    # OpenAI-compatible (openai + github models)
+    from openai import OpenAI
+    base_url = (
+        "https://models.inference.ai.azure.com"
+        if provider == "github"
+        else None
     )
-
-    network_errors = [
-        "Connection refused",
-        "Connection timed out",
-        "Network is unreachable",
-        "No route to host",
-        "Operation timed out",
-        "error getting response",
-        "connection reset",
-        "i/o timeout"
-    ]
-
-    if any(error.lower() in logs.lower() for error in network_errors):
-
-        return {
-            "pod": pod_name,
-            "issue": "NetworkingFailure",
-            "severity": "High",
-            "root_cause": "Application failed to communicate with a remote endpoint.",
-            "log_snippet": logs,
-            "recommendation": [
-                "Verify destination IP or Service",
-                "Verify destination port",
-                "Check Service and Endpoints",
-                "Verify NetworkPolicy configuration",
-                "Check firewall/security groups",
-                "Run connectivity tests from another pod"
-            ]
-        }
-
-    return {
-        "pod": pod_name,
-        "message": "No networking failure detected."
-    }
-
-@app.get("/analyze/resource/{pod_name}")
-def analyze_resource(pod_name: str):
-
-    pod_name = pod_name.strip()
-
-    config.load_kube_config(context="kind-ai-agent")
-
-    v1 = client.CoreV1Api()
-
-    pod = v1.read_namespaced_pod(
-        name=pod_name,
-        namespace="default"
+    oc = OpenAI(api_key=api_key, base_url=base_url)
+    resp = oc.chat.completions.create(
+        model=model,
+        max_tokens=1024,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user",   "content": user},
+        ],
     )
+    return resp.choices[0].message.content
 
-    container = pod.spec.containers[0]
-    status = pod.status.container_statuses[0]
 
-    requests = container.resources.requests or {}
-    limits = container.resources.limits or {}
+# ──────────────────────────────────────────────
+# AI Analysis
+# ──────────────────────────────────────────────
 
-    cpu_request = requests.get("cpu", "Not Set")
-    cpu_limit = limits.get("cpu", "Not Set")
+class AIRequest(BaseModel):
+    resource_type: str       # pod | deployment | service
+    resource_name: str
+    namespace: str
+    context: Optional[str] = None
+    user_question: Optional[str] = None
+    api_key: Optional[str] = None
+    provider: str = "anthropic"
+    model: Optional[str] = None
 
-    memory_request = requests.get("memory", "Not Set")
-    memory_limit = limits.get("memory", "Not Set")
 
-    restart_count = status.restart_count
+@app.post("/ai/analyze")
+def ai_analyze(req: AIRequest):
+    api_key = req.api_key or os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise HTTPException(
+            status_code=400,
+            detail="No API key provided. Click '⚠ Set API Key' in the toolbar."
+        )
+    model = req.model or PROVIDER_DEFAULTS.get(req.provider, "gpt-4o-mini")
 
-    if (
-        status.state
-        and status.state.terminated
-        and status.state.terminated.reason == "OOMKilled"
-    ):
+    # Gather raw k8s data to pass to Claude
+    load_k8s(req.context)
+    v1 = client.CoreV1Api()
+    apps = client.AppsV1Api()
 
-        return {
-            "pod": pod_name,
-            "issue": "ResourceExhaustion",
-            "severity": "Critical",
-            "root_cause": "Container exceeded its configured memory limit and was terminated by Kubernetes.",
+    context_data: dict = {}
 
-            "resources": {
-                "cpu_request": cpu_request,
-                "cpu_limit": cpu_limit,
-                "memory_request": memory_request,
-                "memory_limit": memory_limit
-            },
-
-            "restart_count": restart_count,
-
-            "recommendation": [
-                "Increase memory limit",
-                "Review application memory usage",
-                "Investigate memory leaks",
-                "Monitor memory utilization",
-                "Consider Vertical Pod Autoscaler",
-                "Configure Horizontal Pod Autoscaler"
+    try:
+        if req.resource_type == "pod":
+            pod = v1.read_namespaced_pod(name=req.resource_name, namespace=req.namespace)
+            context_data["phase"] = pod.status.phase
+            context_data["conditions"] = [
+                {"type": c.type, "status": c.status, "reason": c.reason or ""}
+                for c in (pod.status.conditions or [])
             ]
-        }
-
-    if (
-        status.last_state
-        and status.last_state.terminated
-        and status.last_state.terminated.reason == "OOMKilled"
-    ):
-
-        return {
-            "pod": pod_name,
-            "issue": "ResourceExhaustion",
-            "severity": "Critical",
-            "root_cause": "Container was previously OOMKilled due to memory exhaustion.",
-
-            "resources": {
-                "cpu_request": cpu_request,
-                "cpu_limit": cpu_limit,
-                "memory_request": memory_request,
-                "memory_limit": memory_limit
-            },
-
-            "restart_count": restart_count,
-
-            "recommendation": [
-                "Increase memory limit",
-                "Review application memory usage",
-                "Investigate memory leaks",
-                "Monitor memory utilization",
-                "Consider Vertical Pod Autoscaler",
-                "Configure Horizontal Pod Autoscaler"
+            container_statuses = pod.status.container_statuses or []
+            context_data["containers"] = [
+                {
+                    "name": cs.name,
+                    "ready": cs.ready,
+                    "restarts": cs.restart_count,
+                    "state": _container_state(cs),
+                    "last_state": (
+                        _container_state_dict(cs.last_state) if cs.last_state else None
+                    ),
+                }
+                for cs in container_statuses
             ]
-        }
+            # Events
+            events = v1.list_namespaced_event(
+                namespace=req.namespace,
+                field_selector=f"involvedObject.name={req.resource_name}",
+            )
+            context_data["events"] = [
+                {"type": e.type, "reason": e.reason, "message": e.message, "count": e.count}
+                for e in events.items
+            ]
+            # Tail logs
+            try:
+                logs = v1.read_namespaced_pod_log(
+                    name=req.resource_name,
+                    namespace=req.namespace,
+                    tail_lines=50,
+                )
+                context_data["logs_tail"] = logs
+            except Exception:
+                context_data["logs_tail"] = "(could not retrieve logs)"
 
-    return {
-        "pod": pod_name,
-        "message": "No resource exhaustion detected."
-    }
+        elif req.resource_type == "deployment":
+            d = apps.read_namespaced_deployment(name=req.resource_name, namespace=req.namespace)
+            context_data["desired"] = d.spec.replicas
+            context_data["ready"] = d.status.ready_replicas or 0
+            context_data["available"] = d.status.available_replicas or 0
+            context_data["updated"] = d.status.updated_replicas or 0
+            context_data["conditions"] = [
+                {"type": c.type, "status": c.status, "reason": c.reason or "", "message": c.message or ""}
+                for c in (d.status.conditions or [])
+            ]
+
+        elif req.resource_type == "service":
+            s = v1.read_namespaced_service(name=req.resource_name, namespace=req.namespace)
+            context_data["type"] = s.spec.type
+            context_data["selector"] = dict(s.spec.selector or {})
+            context_data["cluster_ip"] = s.spec.cluster_ip
+            try:
+                ep = v1.read_namespaced_endpoints(name=req.resource_name, namespace=req.namespace)
+                has_ep = bool(ep.subsets and any(sub.addresses for sub in ep.subsets))
+                context_data["has_endpoints"] = has_ep
+                context_data["endpoint_count"] = sum(
+                    len(sub.addresses) for sub in (ep.subsets or []) if sub.addresses
+                )
+            except Exception:
+                context_data["has_endpoints"] = "unknown"
+
+    except Exception as e:
+        context_data["fetch_error"] = str(e)
+
+    import json
+    system_prompt = """You are an expert Kubernetes Site Reliability Engineer.
+You receive raw Kubernetes resource data and diagnose issues concisely.
+Respond in this exact JSON structure:
+{
+  "summary": "one-sentence status summary",
+  "issues": ["list of detected issues, empty if healthy"],
+  "root_cause": "root cause explanation or 'None detected'",
+  "severity": "Critical|High|Medium|Low|Healthy",
+  "recommendations": ["actionable steps"],
+  "kubectl_commands": ["kubectl commands the developer can run to investigate further"]
+}"""
+
+    user_content = f"""Kubernetes {req.resource_type.upper()} Analysis Request
+
+Resource: {req.resource_name}
+Namespace: {req.namespace}
+
+Raw K8s Data:
+{json.dumps(context_data, indent=2)}
+"""
+    if req.user_question:
+        user_content += f"\nDeveloper Question: {req.user_question}"
+
+    import re
+    raw = llm_complete(req.provider, api_key, model, system_prompt, user_content).strip()
+    try:
+        json_match = re.search(r'\{.*\}', raw, re.DOTALL)
+        if json_match:
+            return json.loads(json_match.group())
+    except Exception:
+        pass
+
+    return {"raw_response": raw}
 
 
-# ==========================================================
-# Unified AI Pod Analyzer
-# ==========================================================
+def _container_state_dict(state) -> dict:
+    if state.running:
+        return {"type": "Running"}
+    if state.waiting:
+        return {"type": "Waiting", "reason": state.waiting.reason}
+    if state.terminated:
+        return {"type": "Terminated", "reason": state.terminated.reason, "exit_code": state.terminated.exit_code}
+    return {}
 
-@app.get("/analyze/pod/{pod_name}")
-def analyze_pod_ai(pod_name: str):
 
-    return {
-        "message": "AI Analyzer Coming Soon"
-    }
+# ──────────────────────────────────────────────
+# AI Chat (free-form question about the cluster)
+# ──────────────────────────────────────────────
+
+class ChatRequest(BaseModel):
+    message: str
+    context: Optional[str] = None
+    namespace: str = "default"
+    resource_context: Optional[dict] = None
+    api_key: Optional[str] = None
+    provider: str = "anthropic"
+    model: Optional[str] = None
+
+
+@app.post("/ai/chat")
+def ai_chat(req: ChatRequest):
+    api_key = req.api_key or os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise HTTPException(
+            status_code=400,
+            detail="No API key provided. Click '⚠ Set API Key' in the toolbar."
+        )
+
+    import json
+    model = req.model or PROVIDER_DEFAULTS.get(req.provider, "gpt-4o-mini")
+
+    system_prompt = """You are an expert Kubernetes SRE assistant embedded in a K8s troubleshooting dashboard.
+Answer questions concisely. Format responses with markdown for readability.
+Include kubectl commands when useful. Keep responses focused and actionable."""
+
+    user_content = req.message
+    if req.resource_context:
+        user_content = f"Context: {json.dumps(req.resource_context, indent=2)}\n\nQuestion: {req.message}"
+
+    text = llm_complete(req.provider, api_key, model, system_prompt, user_content)
+    return {"response": text}
