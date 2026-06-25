@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+
+metadata:
+  name: network-app
+
+spec:
+  replicas: 1
+
+  selector:
+    matchLabels:
+      app: network-app
+
+  template:
+    metadata:
+      labels:
+        app: network-app
+
+    spec:
+      containers:
+      - name: network-app
+        image: busybox
+
+        command:
+        - sh
+        - -c
+        - |
+          wget -T 5 -O- http://10.255.255.1:8080
+          sleep 3600

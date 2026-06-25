@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+
+metadata:
+  name: dns-app
+
+spec:
+  replicas: 1
+
+  selector:
+    matchLabels:
+      app: dns-app
+
+  template:
+    metadata:
+      labels:
+        app: dns-app
+
+    spec:
+      containers:
+      - name: dns-app
+        image: busybox
+
+        command:
+        - sh
+        - -c
+        - |
+          nslookup fake-service.default.svc.cluster.local
+          sleep 3600
