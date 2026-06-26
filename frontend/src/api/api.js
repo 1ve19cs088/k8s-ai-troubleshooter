@@ -34,14 +34,20 @@ export function streamLogs({ namespace, podName, context, tailLines = 100, conta
     if (container) params.set("container", container);
     const url = `http://127.0.0.1:8000/logs/stream/${namespace}/${podName}?${params}`;
     const es = new EventSource(url);
+    let receivedLines = 0;
     es.onmessage = (e) => {
         try {
             const data = JSON.parse(e.data);
             if (data.error) { onError?.(data.error); es.close(); }
-            else onLine?.(data.line);
-        } catch { onLine?.(e.data); }
+            else { receivedLines++; onLine?.(data.line); }
+        } catch { receivedLines++; onLine?.(e.data); }
     };
-    es.onerror = () => { onError?.("Stream disconnected"); es.close(); };
+    // onerror fires both on real failures AND when the server closes the stream normally.
+    // If we already received lines it's a normal end-of-stream, not an error.
+    es.onerror = () => {
+        es.close();
+        if (receivedLines === 0) onError?.("Could not connect to log stream");
+    };
     return es;
 }
 

@@ -111,31 +111,44 @@ export default function SummaryCards({ pods, deployments, services, events }) {
             {/* Services + Events */}
             <div style={{
                 background: "var(--surface)", border: "1px solid var(--border)",
-                borderRadius: 12, padding: "14px 16px", display: "flex", flexDirection: "column", gap: 10,
+                borderRadius: 12, padding: "14px 16px", display: "flex", flexDirection: "column", gap: 0,
             }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                    <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1, color: "var(--text-muted)" }}>Services</div>
+                {/* Services row */}
+                <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 8 }}>
+                    <div>
+                        <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1, color: "var(--text-muted)", marginBottom: 6 }}>Services</div>
+                        <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                            {clusterNodeTypes.length > 0 ? clusterNodeTypes.map(t => (
+                                <span key={t} style={{
+                                    fontSize: 9, fontWeight: 700, padding: "2px 8px", borderRadius: 20,
+                                    background: "var(--surface2)", border: "1px solid var(--border)",
+                                    color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: .5,
+                                }}>{t}</span>
+                            )) : <span style={{ fontSize: 11, color: "var(--text-muted)" }}>—</span>}
+                        </div>
+                    </div>
                     <span style={{ fontSize: 22, fontWeight: 800, color: "var(--text)", letterSpacing: "-1px" }}>{services.length}</span>
                 </div>
-                {clusterNodeTypes.length > 0 && (
-                    <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                        {clusterNodeTypes.map(t => (
-                            <span key={t} style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 20, background: "var(--surface2)", border: "1px solid var(--border)", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: .5 }}>
-                                {t}
-                            </span>
-                        ))}
-                    </div>
-                )}
-                <div style={{ borderTop: "1px solid var(--border)", paddingTop: 8, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                    <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1, color: "var(--text-muted)" }}>Events</div>
-                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                        <span style={{ fontSize: 13, fontWeight: 700, color: "var(--text)" }}>{events.length}</span>
-                        {warnings > 0 && (
-                            <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 20, background: "rgba(245,158,11,.15)", border: "1px solid rgba(245,158,11,.3)", color: "#f59e0b" }}>
-                                ⚠ {warnings} warnings
+
+                {/* Divider */}
+                <div style={{ borderTop: "1px solid var(--border)", margin: "0 -2px 8px" }} />
+
+                {/* Events row */}
+                <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
+                    <div>
+                        <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1, color: "var(--text-muted)", marginBottom: 6 }}>Events</div>
+                        {warnings > 0 ? (
+                            <span style={{
+                                fontSize: 10, fontWeight: 700, padding: "2px 9px", borderRadius: 20,
+                                background: "rgba(245,158,11,.15)", border: "1px solid rgba(245,158,11,.3)", color: "#f59e0b",
+                            }}>⚠ {warnings} warnings</span>
+                        ) : (
+                            <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 9px", borderRadius: 20, background: "rgba(34,197,94,.1)", border: "1px solid rgba(34,197,94,.2)", color: "#22c55e" }}>
+                                ✓ No warnings
                             </span>
                         )}
                     </div>
+                    <span style={{ fontSize: 22, fontWeight: 800, color: "var(--text)", letterSpacing: "-1px" }}>{events.length}</span>
                 </div>
             </div>
 
