@@ -1,5 +1,5 @@
-import { useState, useEffect } from "react";
-import { getPodDetail, getLogs } from "../api/api";
+import { useState, useEffect, useRef, useCallback } from "react";
+import { getPodDetail, streamLogs } from "../api/api";
 
 function classifyLogLine(line) {
     const l = line.toLowerCase();
@@ -25,15 +25,82 @@ function parseLogLine(raw) {
     return { ts: null, msg: raw };
 }
 
-function LogsSection({ resource, canHaveLogs, logs, logsLoading, showLogs, loadLogs }) {
-    const [filter, setFilter] = useState("");
-    const [levelFilter, setLevelFilter] = useState("all");
+function LogLine({ line }) {
+    const level = classifyLogLine(line);
+    const s = LOG_LEVEL_STYLES[level];
+    const { ts, msg } = parseLogLine(line);
+    return (
+        <div style={{
+            display: "flex", alignItems: "flex-start", gap: 8,
+            padding: "5px 10px", borderRadius: 6,
+            borderLeft: `3px solid ${s.border}`,
+            background: "var(--surface)", fontSize: 12, lineHeight: 1.4,
+        }}>
+            <span style={{
+                background: s.badge, color: s.badgeText, borderRadius: 4,
+                padding: "1px 5px", fontSize: 10, fontWeight: 700,
+                flexShrink: 0, minWidth: 30, textAlign: "center",
+            }}>{s.label}</span>
+            {ts && (
+                <span style={{ color: "var(--text-muted)", fontSize: 10, flexShrink: 0, paddingTop: 1, fontFamily: "monospace" }}>
+                    {ts}
+                </span>
+            )}
+            <span style={{ fontFamily: "monospace", wordBreak: "break-all", color: "var(--text)", flex: 1 }}>
+                {msg}
+            </span>
+        </div>
+    );
+}
 
-    const lines = logs ? logs.split("\n").filter(l => l.trim()) : [];
+function LogsSection({ resource, canHaveLogs, context }) {
+    const [lines, setLines]           = useState([]);
+    const [streaming, setStreaming]   = useState(false);
+    const [error, setError]           = useState(null);
+    const [filter, setFilter]         = useState("");
+    const [levelFilter, setLevelFilter] = useState("all");
+    const [autoScroll, setAutoScroll] = useState(true);
+    const esRef    = useRef(null);
+    const bottomRef = useRef(null);
+
+    // Auto-scroll to bottom when new lines arrive
+    useEffect(() => {
+        if (autoScroll) bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    }, [lines, autoScroll]);
+
+    // Stop stream when pod changes
+    useEffect(() => {
+        return () => { esRef.current?.close(); };
+    }, [resource.name, resource.namespace]);
+
+    const startStream = useCallback(() => {
+        esRef.current?.close();
+        setLines([]);
+        setError(null);
+        setStreaming(true);
+
+        esRef.current = streamLogs({
+            namespace: resource.namespace,
+            podName: resource.name,
+            context,
+            tailLines: 200,
+            onLine: (line) => setLines(prev => [...prev, line]),
+            onError: (err) => { setError(err); setStreaming(false); },
+        });
+
+        // Mark as stopped when EventSource closes naturally
+        esRef.current.addEventListener("error", () => setStreaming(false));
+    }, [resource.name, resource.namespace, context]);
+
+    const stopStream = () => {
+        esRef.current?.close();
+        setStreaming(false);
+    };
+
     const filtered = lines.filter(line => {
         const level = classifyLogLine(line);
         const matchLevel = levelFilter === "all" || level === levelFilter;
-        const matchText = !filter || line.toLowerCase().includes(filter.toLowerCase());
+        const matchText  = !filter || line.toLowerCase().includes(filter.toLowerCase());
         return matchLevel && matchText;
     });
 
@@ -42,63 +109,78 @@ function LogsSection({ resource, canHaveLogs, logs, logsLoading, showLogs, loadL
 
     return (
         <div className="detail-section">
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-                <h4>Container Logs</h4>
-                <button
-                    onClick={loadLogs}
-                    disabled={logsLoading}
-                    style={{
-                        padding: "4px 12px",
-                        background: "var(--surface2)",
+            {/* Header row */}
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                <h4 style={{ flex: 1 }}>Container Logs</h4>
+
+                {streaming && (
+                    <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: "#16a34a" }}>
+                        <span style={{
+                            width: 7, height: 7, borderRadius: "50%", background: "#4ade80",
+                            animation: "pulse 1.5s ease-in-out infinite", flexShrink: 0,
+                        }} />
+                        Live
+                    </span>
+                )}
+
+                {/* Auto-scroll toggle */}
+                {lines.length > 0 && (
+                    <button onClick={() => setAutoScroll(v => !v)} style={{
+                        padding: "3px 9px", borderRadius: 6, fontSize: 11, fontWeight: 600,
                         border: "1px solid var(--border)",
-                        borderRadius: 6,
-                        cursor: canHaveLogs ? "pointer" : "not-allowed",
-                        fontSize: 11,
-                        fontWeight: 600,
-                        opacity: canHaveLogs ? 1 : 0.5,
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 4,
-                    }}
-                    title={canHaveLogs ? "Load container logs" : "Container has not started — no logs available"}
-                >
-                    {logsLoading ? "⟳ Loading…" : showLogs ? "↻ Reload" : "📜 Load logs"}
-                </button>
+                        background: autoScroll ? "#eff6ff" : "var(--surface2)",
+                        color: autoScroll ? "#2563eb" : "var(--text-muted)",
+                        cursor: "pointer",
+                    }} title="Toggle auto-scroll to bottom">
+                        ↓ {autoScroll ? "Auto-scroll on" : "Auto-scroll off"}
+                    </button>
+                )}
+
+                {/* Clear */}
+                {lines.length > 0 && (
+                    <button onClick={() => setLines([])} style={{
+                        padding: "3px 9px", borderRadius: 6, fontSize: 11, fontWeight: 600,
+                        border: "1px solid var(--border)", background: "var(--surface2)",
+                        color: "var(--text-muted)", cursor: "pointer",
+                    }}>Clear</button>
+                )}
+
+                {/* Stream / Stop */}
+                {canHaveLogs ? (
+                    streaming ? (
+                        <button onClick={stopStream} style={{
+                            padding: "4px 12px", borderRadius: 6, fontSize: 11, fontWeight: 700,
+                            border: "1px solid #fca5a5", background: "#fee2e2",
+                            color: "#dc2626", cursor: "pointer",
+                        }}>⏹ Stop</button>
+                    ) : (
+                        <button onClick={startStream} style={{
+                            padding: "4px 12px", borderRadius: 6, fontSize: 11, fontWeight: 700,
+                            border: "1px solid #93c5fd", background: "#eff6ff",
+                            color: "#2563eb", cursor: "pointer",
+                        }}>▶ Stream logs</button>
+                    )
+                ) : (
+                    <span style={{ fontSize: 11, color: "var(--text-muted)", opacity: 0.6 }}>
+                        Not running
+                    </span>
+                )}
             </div>
 
-            {!showLogs && !logsLoading && (
+            {/* Not running warning */}
+            {!canHaveLogs && (
                 <div style={{
-                    background: "var(--surface2)",
-                    border: "1px solid var(--border)",
-                    borderRadius: 8,
-                    padding: "20px",
-                    textAlign: "center",
-                    color: "var(--text-muted)",
-                    fontSize: 12,
-                }}>
-                    Click <strong>Load logs</strong> to view container output
-                </div>
-            )}
-
-            {showLogs && !canHaveLogs && (
-                <div style={{
-                    background: "var(--surface2)",
-                    border: "1px solid var(--border)",
-                    borderLeft: "4px solid #d97706",
-                    borderRadius: 8,
-                    padding: "14px 16px",
-                    fontSize: 12,
-                    color: "var(--text-muted)",
-                    display: "flex",
-                    alignItems: "flex-start",
-                    gap: 10,
+                    background: "var(--surface2)", border: "1px solid var(--border)",
+                    borderLeft: "4px solid #d97706", borderRadius: 8,
+                    padding: "14px 16px", fontSize: 12, color: "var(--text-muted)",
+                    display: "flex", alignItems: "flex-start", gap: 10,
                 }}>
                     <span style={{ fontSize: 18, flexShrink: 0 }}>⚠</span>
                     <div>
                         <strong style={{ color: "var(--text)", display: "block", marginBottom: 4 }}>No logs available</strong>
                         {resource.status === "Pending"
                             ? "Pod is Pending — container hasn't started yet."
-                            : "Container has not produced any logs or failed before startup."}
+                            : "Container failed before producing any output."}
                         <code style={{ display: "inline-block", marginTop: 8, background: "#0d1117", color: "#7dd3fc", padding: "3px 8px", borderRadius: 4, fontSize: 11 }}>
                             kubectl describe pod {resource.name} -n {resource.namespace}
                         </code>
@@ -106,103 +188,88 @@ function LogsSection({ resource, canHaveLogs, logs, logsLoading, showLogs, loadL
                 </div>
             )}
 
-            {showLogs && canHaveLogs && logs && (
-                <>
-                    {/* Level summary + filters */}
-                    <div style={{ display: "flex", gap: 6, marginBottom: 8, flexWrap: "wrap", alignItems: "center" }}>
-                        {["all", "error", "warn", "info", "debug"].map(lvl => {
-                            const s = LOG_LEVEL_STYLES[lvl] || LOG_LEVEL_STYLES.default;
-                            const cnt = lvl === "all" ? lines.length : counts[lvl];
-                            const active = levelFilter === lvl;
-                            return (
-                                <button key={lvl} onClick={() => setLevelFilter(lvl)} style={{
-                                    padding: "3px 9px",
-                                    borderRadius: 12,
-                                    border: active ? `1px solid ${s.border}` : "1px solid var(--border)",
-                                    background: active ? s.badge : "var(--surface2)",
-                                    color: active ? s.badgeText : "var(--text-muted)",
-                                    fontSize: 11,
-                                    fontWeight: 600,
-                                    cursor: "pointer",
-                                }}>
-                                    {lvl === "all" ? "All" : s.label} {cnt > 0 && <span style={{ opacity: 0.7 }}>({cnt})</span>}
-                                </button>
-                            );
-                        })}
-                        <input
-                            placeholder="Filter lines…"
-                            value={filter}
-                            onChange={e => setFilter(e.target.value)}
-                            style={{
-                                marginLeft: "auto",
-                                padding: "3px 9px",
-                                border: "1px solid var(--border)",
-                                borderRadius: 6,
-                                fontSize: 11,
-                                background: "var(--surface2)",
-                                color: "var(--text)",
-                                width: 140,
-                            }}
-                        />
-                    </div>
+            {/* Idle state */}
+            {canHaveLogs && !streaming && lines.length === 0 && !error && (
+                <div style={{
+                    background: "var(--surface2)", border: "1px solid var(--border)",
+                    borderRadius: 8, padding: "24px", textAlign: "center",
+                    color: "var(--text-muted)", fontSize: 12,
+                }}>
+                    Click <strong>▶ Stream logs</strong> to follow live container output
+                </div>
+            )}
 
-                    {/* Log lines — event-row style */}
+            {/* Error */}
+            {error && (
+                <div style={{
+                    background: "#fee2e2", border: "1px solid #fca5a5",
+                    borderRadius: 8, padding: "10px 14px", fontSize: 12,
+                    color: "#dc2626", marginBottom: 8,
+                }}>
+                    ✕ {error}
+                </div>
+            )}
+
+            {/* Filter bar */}
+            {lines.length > 0 && (
+                <div style={{ display: "flex", gap: 6, marginBottom: 8, flexWrap: "wrap", alignItems: "center" }}>
+                    {["all", "error", "warn", "info", "debug"].map(lvl => {
+                        const s = LOG_LEVEL_STYLES[lvl] || LOG_LEVEL_STYLES.default;
+                        const cnt = lvl === "all" ? lines.length : counts[lvl];
+                        const active = levelFilter === lvl;
+                        return (
+                            <button key={lvl} onClick={() => setLevelFilter(lvl)} style={{
+                                padding: "3px 9px", borderRadius: 12, fontSize: 11, fontWeight: 600,
+                                border: active ? `1px solid ${s.border}` : "1px solid var(--border)",
+                                background: active ? s.badge : "var(--surface2)",
+                                color: active ? s.badgeText : "var(--text-muted)",
+                                cursor: "pointer",
+                            }}>
+                                {lvl === "all" ? "All" : s.label}
+                                {cnt > 0 && <span style={{ opacity: 0.7 }}> ({cnt})</span>}
+                            </button>
+                        );
+                    })}
+                    <input
+                        placeholder="Filter lines…"
+                        value={filter}
+                        onChange={e => setFilter(e.target.value)}
+                        style={{
+                            marginLeft: "auto", padding: "3px 9px",
+                            border: "1px solid var(--border)", borderRadius: 6,
+                            fontSize: 11, background: "var(--surface2)", color: "var(--text)", width: 140,
+                        }}
+                    />
+                </div>
+            )}
+
+            {/* Log lines */}
+            {lines.length > 0 && (
+                <>
                     <div style={{
-                        overflowY: "visible",
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: 3,
-                        borderRadius: 8,
-                        border: "1px solid var(--border)",
-                        padding: 6,
-                        background: "var(--surface2)",
-                    }}>
-                        {filtered.length === 0 && (
+                        display: "flex", flexDirection: "column", gap: 3,
+                        borderRadius: 8, border: "1px solid var(--border)",
+                        padding: 6, background: "var(--surface2)",
+                        maxHeight: 420, overflowY: "auto",
+                    }}
+                        onScroll={e => {
+                            const el = e.currentTarget;
+                            const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+                            setAutoScroll(atBottom);
+                        }}
+                    >
+                        {filtered.length === 0 ? (
                             <div style={{ padding: "16px", textAlign: "center", color: "var(--text-muted)", fontSize: 12 }}>
                                 No lines match the current filter
                             </div>
+                        ) : (
+                            filtered.map((line, i) => <LogLine key={i} line={line} />)
                         )}
-                        {filtered.map((line, i) => {
-                            const level = classifyLogLine(line);
-                            const s = LOG_LEVEL_STYLES[level];
-                            const { ts, msg } = parseLogLine(line);
-                            return (
-                                <div key={i} style={{
-                                    display: "flex",
-                                    alignItems: "flex-start",
-                                    gap: 8,
-                                    padding: "6px 10px",
-                                    borderRadius: 6,
-                                    borderLeft: `3px solid ${s.border}`,
-                                    background: "var(--surface)",
-                                    fontSize: 12,
-                                    lineHeight: 1.4,
-                                }}>
-                                    <span style={{
-                                        background: s.badge,
-                                        color: s.badgeText,
-                                        borderRadius: 4,
-                                        padding: "1px 5px",
-                                        fontSize: 10,
-                                        fontWeight: 700,
-                                        flexShrink: 0,
-                                        minWidth: 30,
-                                        textAlign: "center",
-                                    }}>{s.label}</span>
-                                    {ts && (
-                                        <span style={{ color: "var(--text-muted)", fontSize: 10, flexShrink: 0, paddingTop: 1, fontFamily: "monospace" }}>
-                                            {ts}
-                                        </span>
-                                    )}
-                                    <span style={{ fontFamily: "monospace", wordBreak: "break-all", color: "var(--text)", flex: 1 }}>
-                                        {msg}
-                                    </span>
-                                </div>
-                            );
-                        })}
+                        <div ref={bottomRef} />
                     </div>
-                    <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 4, textAlign: "right" }}>
-                        Showing {filtered.length} of {lines.length} lines
+                    <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 4, display: "flex", justifyContent: "space-between" }}>
+                        <span>{streaming ? "● Streaming" : "● Stopped"}</span>
+                        <span>Showing {filtered.length} of {lines.length} lines</span>
                     </div>
                 </>
             )}
@@ -221,41 +288,15 @@ function KV({ label, value }) {
 
 function PodDetail({ resource, context }) {
     const [detail, setDetail] = useState(null);
-    const [logs, setLogs] = useState(null);
-    const [logsLoading, setLogsLoading] = useState(false);
-    const [showLogs, setShowLogs] = useState(false);
 
     useEffect(() => {
         setDetail(null);
-        setLogs(null);
-        setShowLogs(false);
         getPodDetail(resource.namespace, resource.name, context)
             .then(setDetail)
             .catch(() => setDetail({ error: true }));
     }, [resource.name, resource.namespace, context]);
 
     const canHaveLogs = resource.status === "Running" || resource.restarts > 0;
-
-    const loadLogs = () => {
-        if (!canHaveLogs) {
-            setShowLogs(true);
-            setLogs(null);
-            return;
-        }
-        setLogsLoading(true);
-        setShowLogs(true);
-        getLogs(resource.namespace, resource.name, context)
-            .then(r => setLogs(r.logs || "(no log output)"))
-            .catch(err => {
-                const detail = err.response?.data?.detail || "";
-                if (detail.includes("waiting") || detail.includes("not started") || detail.includes("ContainerCreating")) {
-                    setLogs(null); // show no-logs UI
-                } else {
-                    setLogs("(could not retrieve logs — container may not have started yet)");
-                }
-            })
-            .finally(() => setLogsLoading(false));
-    };
 
     return (
         <div className="detail-body">
@@ -323,13 +364,6 @@ function PodDetail({ resource, context }) {
                 resource={resource}
                 context={context}
                 canHaveLogs={canHaveLogs}
-                logs={logs}
-                setLogs={setLogs}
-                logsLoading={logsLoading}
-                setLogsLoading={setLogsLoading}
-                showLogs={showLogs}
-                setShowLogs={setShowLogs}
-                loadLogs={loadLogs}
             />
         </div>
     );

@@ -1,10 +1,13 @@
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from typing import Optional
 from pydantic import BaseModel
 from kubernetes import client, config
 import anthropic
 import os
+import json
+import time
 
 app = FastAPI(title="K8s AI Troubleshooter")
 
@@ -219,6 +222,57 @@ def get_logs(
         return {"pod_name": pod_name, "namespace": namespace, "logs": logs}
     except Exception as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+# ──────────────────────────────────────────────
+# Streaming Logs  (SSE)
+# ──────────────────────────────────────────────
+
+@app.get("/logs/stream/{namespace}/{pod_name}")
+def stream_logs(
+    namespace: str,
+    pod_name: str,
+    context: Optional[str] = Query(default=None),
+    tail_lines: int = Query(default=100),
+    container: Optional[str] = Query(default=None),
+):
+    load_k8s(context)
+    v1 = client.CoreV1Api()
+
+    def event_generator():
+        try:
+            # Stream with follow=True, _preload_content=False gives a raw urllib3 response
+            kwargs = dict(
+                name=pod_name,
+                namespace=namespace,
+                follow=True,
+                tail_lines=tail_lines,
+                _preload_content=False,
+            )
+            if container:
+                kwargs["container"] = container
+
+            resp = v1.read_namespaced_pod_log(**kwargs)
+
+            for raw_line in resp:
+                line = raw_line.decode("utf-8", errors="replace").rstrip("\n")
+                if line:
+                    payload = json.dumps({"line": line, "ts": time.time()})
+                    yield f"data: {payload}\n\n"
+
+        except Exception as e:
+            err = json.dumps({"error": str(e)})
+            yield f"data: {err}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",       # disable nginx buffering if proxied
+            "Access-Control-Allow-Origin": "http://localhost:5173",
+        },
+    )
 
 
 # ──────────────────────────────────────────────
