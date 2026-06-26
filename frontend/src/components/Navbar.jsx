@@ -198,6 +198,7 @@ export default function Navbar({
     currentContext, contexts, onContextChange,
     namespace, namespaces, onNamespaceChange,
     onRefresh, loading,
+    viewTab, onViewTab,
 }) {
     const [showModal, setShowModal] = useState(false);
     const settings = getLLMSettings();
@@ -213,6 +214,25 @@ export default function Navbar({
                     <path d="M2 12h20"/>
                 </svg>
                 K8s AI Troubleshooter
+            </div>
+
+            <div className="navbar-divider" />
+
+            {/* View tabs */}
+            <div style={{ display: "flex", gap: 2 }}>
+                {[
+                    { id: "cluster", label: "☸ Cluster" },
+                    { id: "logs",    label: "▶ Logs" },
+                    { id: "events",  label: "⚡ Events" },
+                ].map(v => (
+                    <button key={v.id} onClick={() => onViewTab(v.id)} style={{
+                        padding: "4px 13px", borderRadius: 6, fontSize: 12, fontWeight: 600,
+                        border: "1px solid transparent",
+                        background: viewTab === v.id ? "rgba(37,99,235,.15)" : "transparent",
+                        color: viewTab === v.id ? "#93c5fd" : "rgba(255,255,255,.6)",
+                        cursor: "pointer",
+                    }}>{v.label}</button>
+                ))}
             </div>
 
             <div className="navbar-divider" />

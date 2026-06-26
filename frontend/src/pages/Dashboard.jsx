@@ -4,6 +4,8 @@ import SummaryCards from "../components/SummaryCards";
 import ResourceSidebar from "../components/ResourceSidebar";
 import DetailPanel from "../components/DetailPanel";
 import AIPanel from "../components/AIPanel";
+import LiveLogsView from "../components/LiveLogsView";
+import LiveEventsView from "../components/LiveEventsView";
 
 import {
     getContexts,
@@ -32,6 +34,7 @@ export default function Dashboard() {
     // UI state
     const [tab, setTab] = useState("Pods");
     const [selected, setSelected] = useState(null);
+    const [viewTab, setViewTab] = useState("cluster");
 
     // Load contexts once on mount
     useEffect(() => {
@@ -102,6 +105,8 @@ export default function Dashboard() {
                 onNamespaceChange={handleNamespaceChange}
                 onRefresh={loadResources}
                 loading={loading}
+                viewTab={viewTab}
+                onViewTab={setViewTab}
             />
 
             {clusterError && (
@@ -119,23 +124,45 @@ export default function Dashboard() {
                 />
             </div>
 
-            <div className="app-layout" style={{ height: "calc(100vh - 56px - 110px)" }}>
-                <ResourceSidebar
-                    tab={tab}
-                    setTab={setTab}
-                    pods={pods}
-                    deployments={deployments}
-                    services={services}
-                    events={events}
-                    selected={selected}
-                    onSelect={setSelected}
-                />
+            <div style={{ height: "calc(100vh - 56px - 110px)", display: "flex", flexDirection: "column", minHeight: 0 }}>
+                {viewTab === "cluster" && (
+                    <div className="app-layout" style={{ flex: 1, minHeight: 0 }}>
+                        <ResourceSidebar
+                            tab={tab}
+                            setTab={setTab}
+                            pods={pods}
+                            deployments={deployments}
+                            services={services}
+                            events={events}
+                            selected={selected}
+                            onSelect={setSelected}
+                        />
+                        <div style={{ overflowY: "auto", overflowX: "hidden", padding: 16, minHeight: 0 }}>
+                            <DetailPanel selected={selected} context={currentContext} />
+                        </div>
+                        <AIPanel selected={selected} context={currentContext} />
+                    </div>
+                )}
 
-                <div style={{ overflowY: "auto", overflowX: "hidden", padding: 16, minHeight: 0 }}>
-                    <DetailPanel selected={selected} context={currentContext} />
-                </div>
+                {viewTab === "logs" && (
+                    <div style={{ flex: 1, minHeight: 0 }}>
+                        <LiveLogsView
+                            pods={pods}
+                            selected={selected}
+                            onSelect={setSelected}
+                            context={currentContext}
+                        />
+                    </div>
+                )}
 
-                <AIPanel selected={selected} context={currentContext} />
+                {viewTab === "events" && (
+                    <div style={{ flex: 1, minHeight: 0 }}>
+                        <LiveEventsView
+                            context={currentContext}
+                            namespace={namespace}
+                        />
+                    </div>
+                )}
             </div>
         </>
     );
