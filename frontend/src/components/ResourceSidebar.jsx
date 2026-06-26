@@ -16,12 +16,12 @@ function deployBadge(d) {
 
 export default function ResourceSidebar({
     tab, setTab,
-    pods, deployments, services, events,
+    pods, deployments, services,
     selected, onSelect,
 }) {
     const [search, setSearch] = useState("");
 
-    const TABS = ["Pods", "Deploys", "Services", "Events"];
+    const TABS = ["Pods", "Deploys", "Services"];
 
     const filteredPods = pods.filter(p =>
         p.name.toLowerCase().includes(search.toLowerCase())
@@ -32,10 +32,6 @@ export default function ResourceSidebar({
     const filteredServices = services.filter(s =>
         s.name.toLowerCase().includes(search.toLowerCase())
     );
-    const filteredEvents = events.filter(e =>
-        (e.object + e.reason + e.message).toLowerCase().includes(search.toLowerCase())
-    );
-
     return (
         <div className="sidebar">
             <div className="sidebar-tabs">
@@ -107,31 +103,9 @@ export default function ResourceSidebar({
                     </div>
                 ))}
 
-                {tab === "Events" && filteredEvents.map((e, i) => (
-                    <div
-                        key={i}
-                        className={`resource-item ${selected?.kind === "event" && selected?._idx === i ? "selected" : ""}`}
-                        onClick={() => onSelect({ kind: "event", _idx: i, ...e })}
-                    >
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                                <span className={e.type === "Warning" ? "badge badge-warning" : "badge badge-running"} style={{ fontSize: 10 }}>
-                                    {e.type}
-                                </span>
-                                <span style={{ fontSize: 11, fontWeight: 600 }}>{e.reason}</span>
-                            </div>
-                            <div className="resource-item-ns" style={{ marginTop: 2 }} title={e.message}>
-                                {e.object} — {e.message?.slice(0, 60)}{e.message?.length > 60 ? "…" : ""}
-                            </div>
-                        </div>
-                        {e.count > 1 && <span className="resource-item-ns">×{e.count}</span>}
-                    </div>
-                ))}
-
                 {((tab === "Pods" && filteredPods.length === 0) ||
                   (tab === "Deploys" && filteredDeploys.length === 0) ||
-                  (tab === "Services" && filteredServices.length === 0) ||
-                  (tab === "Events" && filteredEvents.length === 0)) && (
+                  (tab === "Services" && filteredServices.length === 0)) && (
                     <div className="empty-state" style={{ padding: "30px 10px" }}>
                         <div className="icon">◎</div>
                         <p>No {tab.toLowerCase()} found</p>
